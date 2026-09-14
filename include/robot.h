@@ -22,7 +22,14 @@
 #define I2C_SCL0 _u(1)
 #define I2C_SDA1 _u(2)
 #define I2C_SCL1 _u(3)
-#define I2C_TIMEOUT _u(1000000) // 1 second timeout
+// 20 ms, not 1 s. A transaction on this bus is a few bytes at 400 kHz, i.e.
+// well under a millisecond; the BQ27742 may clock-stretch, but not for tens of
+// milliseconds. With the old 1 s value a single NAK under motor noise froze
+// the whole command loop -- measured from the phone on 2026-09-14, the reply
+// to SET_MOTOR_LEVEL took 1.09 s (one timeout plus one normal service) every
+// few seconds while the motors ran, and the wheels held a stale command for
+// the duration. Three failures at 1 s each meant 3 s and then assert().
+#define I2C_TIMEOUT _u(20000)
 
 #define ADC0 _u(26)
 
@@ -40,6 +47,10 @@
 #define ENCODER_2_CHANNEL_B _u(15)
 
 #define LED_EN_PIN _u(21) // GPIO21
+
+// How often SET_MOTOR_LEVEL replies re-read the charger and fuel gauge. The
+// values move on a timescale of seconds; the motor loop runs at 50 Hz.
+#define TELEMETRY_PERIOD_US _u(500000)
 
 #define MAX_RETRIES 3
 #define RETRY_DELAY 10

@@ -118,8 +118,24 @@ void get_state(RP2040_STATE* state){
     #ifndef BOARD_PICO
     get_encoder_counts(state);
     get_motor_faults(state);
-    get_charger_state(state);
-    get_battery_state(state);
+    // The charger and fuel-gauge reads are the slow part of a reply: some two
+    // dozen I2C transactions, and dozens of rp2040_log calls describing them.
+    // Measured from the phone (2026-09-10), a SET_MOTOR_LEVEL round trip took
+    // 82 ms, of which the USB write was 1 ms -- the rest was this, and it
+    // capped the wheels at 12 Hz against a 50 Hz controller. None of it
+    // changes on a motor command's timescale, so it is refreshed at most every
+    // TELEMETRY_PERIOD_US and the cached values are returned in between. The
+    // packet layout is unchanged.
+    static RP2040_STATE cached = {0};
+    static uint64_t last_telemetry_us = 0;
+    uint64_t now = time_us_64();
+    if (last_telemetry_us == 0 || now - last_telemetry_us >= TELEMETRY_PERIOD_US) {
+        get_charger_state(&cached);
+        get_battery_state(&cached);
+        last_telemetry_us = now;
+    }
+    state->ChargeSideUSB = cached.ChargeSideUSB;
+    state->BatteryDetails = cached.BatteryDetails;
     #endif
 }
 
