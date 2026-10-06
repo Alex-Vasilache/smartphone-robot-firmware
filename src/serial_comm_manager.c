@@ -28,16 +28,28 @@ static void send_state_response(uint8_t packet_type)
 // stops talking (app crash, USB unplugged, phone asleep) would leave the
 // wheels driving. Stop them if no motor command arrives for this long.
 #define MOTOR_COMMAND_TIMEOUT_MS 250
+// While the host is silent, keep re-sending the stop: one I2C write can be
+// lost to motor noise, and a single stop that failed left one wheel spinning
+// with the app closed (2026-10-06).
+#define MOTOR_STOP_REPEAT_MS 50
 static absolute_time_t motor_command_deadline;
 static bool motors_driven = false;
+static bool host_silent = false;
 
 void motor_command_watchdog(void){
-    if (motors_driven && time_reached(motor_command_deadline)){
+    if (!time_reached(motor_command_deadline)){
+        return;
+    }
+    if (motors_driven){
+        rp2040_log_w("No motor command for %d ms; stopping motors\n", MOTOR_COMMAND_TIMEOUT_MS);
+        motors_driven = false;
+        host_silent = true;
+    }
+    if (host_silent){
         rp2040_state_.MotorsState.ControlValues.left = 0;
         rp2040_state_.MotorsState.ControlValues.right = 0;
         set_motor_levels(&rp2040_state_);
-        motors_driven = false;
-        rp2040_log_w("No motor command for %d ms; motors stopped\n", MOTOR_COMMAND_TIMEOUT_MS);
+        motor_command_deadline = make_timeout_time_ms(MOTOR_STOP_REPEAT_MS);
     }
 }
 
@@ -159,6 +171,7 @@ void handle_packet(IncomingPacketFromAndroid *packet){
 	    set_motor_levels(&rp2040_state_);
 	    // Bits 7..2 are the voltage; zero voltage is coast or brake, nothing to time out.
 	    motors_driven = (packet->data[0] & 0xFC) || (packet->data[1] & 0xFC);
+	    host_silent = false;
 	    motor_command_deadline = make_timeout_time_ms(MOTOR_COMMAND_TIMEOUT_MS);
             get_fast_motor_state(&rp2040_state_);
             send_state_response(packet->packet_type);
