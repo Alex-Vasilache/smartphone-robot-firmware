@@ -34,7 +34,10 @@ static void send_state_response(uint8_t packet_type)
 #define MOTOR_STOP_REPEAT_MS 50
 static absolute_time_t motor_command_deadline;
 static bool motors_driven = false;
-static bool host_silent = false;
+// Silent from boot until the first command: drv8830_init() zeroes the motors
+// once, and if that write is lost a wheel spins from power-up until a host
+// connects (2026-10-06).
+static bool host_silent = true;
 
 void motor_command_watchdog(void){
     if (!time_reached(motor_command_deadline)){
