@@ -354,6 +354,7 @@ int main(){
 	    break;
 	}else{
             telemetry_cache_run_due_step();
+            motor_command_watchdog();
 	    // This sleep or some other time consuming function must occur else can't reset from gdb as thread will be stuck in tight_loop_contents()
             if (!handled_packet) {
                 sleep_ms(1);

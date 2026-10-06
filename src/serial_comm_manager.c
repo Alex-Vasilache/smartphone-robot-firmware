@@ -1,6 +1,7 @@
 #include "pico/types.h"
 #include "serial_comm_manager.h"
 #include "pico/stdio.h"
+#include "pico/time.h"
 #include <string.h>
 #include <stdio.h>
 #include "robot.h"
@@ -20,6 +21,23 @@ static void send_state_response(uint8_t packet_type)
     uint8_t* bytes = (uint8_t*)&outgoing_packet_to_android;
     for (int i = 0; i < sizeof(outgoing_packet_to_android); i++){
         putchar(bytes[i]);
+    }
+}
+
+// The DRV8830s hold their last command until told otherwise, so a host that
+// stops talking (app crash, USB unplugged, phone asleep) would leave the
+// wheels driving. Stop them if no motor command arrives for this long.
+#define MOTOR_COMMAND_TIMEOUT_MS 250
+static absolute_time_t motor_command_deadline;
+static bool motors_driven = false;
+
+void motor_command_watchdog(void){
+    if (motors_driven && time_reached(motor_command_deadline)){
+        rp2040_state_.MotorsState.ControlValues.left = 0;
+        rp2040_state_.MotorsState.ControlValues.right = 0;
+        set_motor_levels(&rp2040_state_);
+        motors_driven = false;
+        rp2040_log_w("No motor command for %d ms; motors stopped\n", MOTOR_COMMAND_TIMEOUT_MS);
     }
 }
 
@@ -139,6 +157,9 @@ void handle_packet(IncomingPacketFromAndroid *packet){
             memcpy(&rp2040_state_.MotorsState.ControlValues.left, &packet->data[0], sizeof(uint8_t));
 	    memcpy(&rp2040_state_.MotorsState.ControlValues.right, &packet->data[1], sizeof(uint8_t));
 	    set_motor_levels(&rp2040_state_);
+	    // Bits 7..2 are the voltage; zero voltage is coast or brake, nothing to time out.
+	    motors_driven = (packet->data[0] & 0xFC) || (packet->data[1] & 0xFC);
+	    motor_command_deadline = make_timeout_time_ms(MOTOR_COMMAND_TIMEOUT_MS);
             get_fast_motor_state(&rp2040_state_);
             send_state_response(packet->packet_type);
 	    break;

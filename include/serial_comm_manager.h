@@ -91,6 +91,7 @@ typedef struct
 #pragma pack() // Reset packing alignment to default
 
 bool get_block(void);
+void motor_command_watchdog(void);
 void serial_comm_manager_init(RP2040_STATE* state);
 
 #endif
