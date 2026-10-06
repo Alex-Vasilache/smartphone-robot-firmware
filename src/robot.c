@@ -429,7 +429,10 @@ void on_start(){
     sleep_ms(1000);
     rp2040_log_d("done waiting, Running unit tests.\n");
 
-    #ifndef BOARD_PICO
+    #if !defined(BOARD_PICO) && !defined(SKIP_BOOT_TESTS)
+    // Built with -DBOOT_TESTS=OFF to skip this block: a lost "off" write left a
+    // wheel spinning from power-up, and a failing unit test's assert() hung
+    // the board before the command loop ever started (2026-10-06).
     set_voltage(MOTOR_LEFT, 2.5);
     set_voltage(MOTOR_RIGHT, 2.5);
     int i = 0;

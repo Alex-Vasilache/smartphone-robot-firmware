@@ -8,6 +8,7 @@ if(NOT (LOGGER STREQUAL "USB" OR LOGGER STREQUAL "UART"))
   message(FATAL_ERROR "invalid logging interface: ${LOGGER}")
 endif()
 option(TELEMETRY_TIMING_DIAG "Time get_state telemetry polling after startup" OFF)
+option(BOOT_TESTS "Spin the motors and run the unit tests at boot" ON)
 
 # Logging level
 set(LOG_LEVEL "WARNING" CACHE STRING "Logging level")
@@ -105,6 +106,10 @@ endif()
 
 pico_enable_stdio_uart(robot 0)
 pico_enable_stdio_usb(robot 1)
+
+if(NOT BOOT_TESTS)
+    target_compile_definitions(robot PUBLIC SKIP_BOOT_TESTS=1)
+endif()
 
 if(LOGGER STREQUAL "UART")
     target_compile_definitions(robot PUBLIC LOGGER_UART=1)
