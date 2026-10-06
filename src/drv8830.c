@@ -152,7 +152,15 @@ void set_motor_control(Motor motor, uint8_t control_value) {
     }
 
     uint8_t buffer[] = { DRV8830_REG_CONTROL, control_value};
-    i2c_write_blocking(i2c, i2c_address, buffer, sizeof(buffer), false);
+    // Bounded, and retried once: the unbounded i2c_write_blocking could wait
+    // forever on a bus disturbed by the motors themselves.
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (i2c_write_timeout_us(i2c, i2c_address, buffer, sizeof(buffer), false,
+                                 I2C_TIMEOUT) == sizeof(buffer)) {
+            return;
+        }
+    }
+    rp2040_log_e("ERROR: motor %d control write failed\n", motor);
 }
 
 void set_voltage(Motor motor, float voltage) {

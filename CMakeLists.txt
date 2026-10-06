@@ -127,7 +127,7 @@ if(DRV8830_SCOPE_TEST)
 endif()
 
 # Add the standard library to the build
-target_link_libraries(robot pico_stdlib pico_multicore hardware_pwm)
+target_link_libraries(robot pico_stdlib pico_multicore hardware_pwm hardware_watchdog)
 
 # Add include directories
 target_include_directories(robot PRIVATE

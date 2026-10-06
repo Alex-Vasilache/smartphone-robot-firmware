@@ -16,6 +16,8 @@
 #include "pico/util/queue.h"
 #include "pico/multicore.h"
 #include <assert.h>
+#include <string.h>
+#include "hardware/watchdog.h"
 #include <CException.h>
 #include "quad_encoders.h"
 #include "drv8830.h"
@@ -347,7 +349,12 @@ int main(){
     bool shutdown = false;
     on_start();
     sleep_ms(1000);
+    // Anything that stops this loop (a hung I2C transaction, a panic) would
+    // otherwise leave the motors driving their last command. Reset instead;
+    // drv8830_init() zeroes both motors on the way back up.
+    watchdog_enable(WATCHDOG_TIMEOUT_MS, true);
     while (true){
+        watchdog_update();
         bool handled_packet = get_block();
 	if (shutdown){
 	    on_shutdown();
@@ -837,8 +844,10 @@ void i2c_write_error_handling(i2c_inst_t *i2c, uint8_t addr, const uint8_t *src,
         telemetry_timing_diag_stats.i2c_write_retries += retries;
         telemetry_timing_diag_stats.i2c_write_failures++;
 #endif
+	// Telemetry is not worth halting the board for: under motor load a NAK
+	// is noise, and an assert() here stopped the command loop with the
+	// wheels still driving. Log it and carry on.
 	rp2040_log_e("ERROR: During i2c_write. Returned value of %i %i \n", result, e);
-	assert(false);
     }
 }
 
@@ -874,6 +883,6 @@ void i2c_read_error_handling(i2c_inst_t *i2c, uint8_t addr, uint8_t *dst, size_t
         telemetry_timing_diag_stats.i2c_read_failures++;
 #endif
 	rp2040_log_e("ERROR: During i2c_read. Returned value of %i %i \n", result, e);
-	assert(false);
+	memset(dst, 0, len);
     }
 }
