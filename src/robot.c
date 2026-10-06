@@ -816,9 +816,29 @@ void quad_encoders_callback(){
     // GPIO12-15 monitor past and current states to determine counts
 }
 
+// A device that stops answering (a fuel gauge on a flat or missing battery,
+// say) would otherwise cost every telemetry pass three timeouts plus the retry
+// sleeps, ~80 ms, stalling motor commands behind it: measured 2026-10-06 on a
+// base reading 0 V, every reply took ~66 ms instead of ~7. After a failure,
+// skip that address for I2C_BACKOFF_MS and return zeros instead.
+#define I2C_BACKOFF_MS 2000
+static absolute_time_t i2c_backoff_until[2][128];
+
+static bool i2c_backed_off(i2c_inst_t *i2c, uint8_t addr){
+    absolute_time_t until = i2c_backoff_until[i2c_hw_index(i2c)][addr & 0x7F];
+    return !is_nil_time(until) && !time_reached(until);
+}
+
+static void i2c_back_off(i2c_inst_t *i2c, uint8_t addr){
+    i2c_backoff_until[i2c_hw_index(i2c)][addr & 0x7F] = make_timeout_time_ms(I2C_BACKOFF_MS);
+}
+
 void i2c_write_error_handling(i2c_inst_t *i2c, uint8_t addr, const uint8_t *src, size_t len, bool nostop){
     int result;
     int retries = 0;
+    if (i2c_backed_off(i2c, addr)) {
+        return;
+    }
 #ifdef TELEMETRY_TIMING_DIAG
     absolute_time_t start = get_absolute_time();
 #endif
@@ -851,12 +871,17 @@ void i2c_write_error_handling(i2c_inst_t *i2c, uint8_t addr, const uint8_t *src,
 	// is noise, and an assert() here stopped the command loop with the
 	// wheels still driving. Log it and carry on.
 	rp2040_log_e("ERROR: During i2c_write. Returned value of %i %i \n", result, e);
+	i2c_back_off(i2c, addr);
     }
 }
 
 void i2c_read_error_handling(i2c_inst_t *i2c, uint8_t addr, uint8_t *dst, size_t len, bool nostop){
     int result;
     int retries = 0;
+    if (i2c_backed_off(i2c, addr)) {
+        memset(dst, 0, len);
+        return;
+    }
 #ifdef TELEMETRY_TIMING_DIAG
     absolute_time_t start = get_absolute_time();
 #endif
@@ -887,5 +912,6 @@ void i2c_read_error_handling(i2c_inst_t *i2c, uint8_t addr, uint8_t *dst, size_t
 #endif
 	rp2040_log_e("ERROR: During i2c_read. Returned value of %i %i \n", result, e);
 	memset(dst, 0, len);
+	i2c_back_off(i2c, addr);
     }
 }
