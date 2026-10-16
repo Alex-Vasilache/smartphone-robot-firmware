@@ -18,7 +18,7 @@
 #include <assert.h>
 #include <string.h>
 #include "hardware/watchdog.h"
-#include "hardware/structs/vreg_and_chip_reset.h"
+#include "health.h"
 #include <CException.h>
 #include "quad_encoders.h"
 #include "drv8830.h"
@@ -50,6 +50,8 @@ static RP2040_STATE rp2040_state;
 
 void i2c_start();
 void i2c_stop();
+static void i2c_write_error_handling_locked(i2c_inst_t *i2c, uint8_t addr, const uint8_t *src, size_t len, bool nostop);
+static void i2c_read_error_handling_locked(i2c_inst_t *i2c, uint8_t addr, uint8_t *dst, size_t len, bool nostop);
 void adc_init();
 void adc_shutdown();
 void init_queues();
@@ -341,8 +343,24 @@ static void telemetry_cache_run_due_step(void)
 
 void set_motor_levels(RP2040_STATE* state){
     #ifndef BOARD_PICO
-    set_motor_control(MOTOR_LEFT, state->MotorsState.ControlValues.left);
-    set_motor_control(MOTOR_RIGHT, state->MotorsState.ControlValues.right);
+    bool ok = set_motor_control(MOTOR_LEFT, state->MotorsState.ControlValues.left);
+    ok = set_motor_control(MOTOR_RIGHT, state->MotorsState.ControlValues.right) && ok;
+    if (health_motor_write(ok)) {
+        // Writes to the motor drivers keep failing: a slave holding SDA after
+        // a supply dip, or a transaction cut short. Unstick the bus and send
+        // the command again; health_bus_recovered() resets the board if this
+        // keeps not helping, and the boot path coasts the motors.
+        rp2040_log_e("motor writes failing; recovering the I2C bus\n");
+        i2c_bus_recover(i2c0, I2C_SDA0, I2C_SCL0);
+        drv8830_clear_faults_now();
+        ok = set_motor_control(MOTOR_LEFT, state->MotorsState.ControlValues.left);
+        ok = set_motor_control(MOTOR_RIGHT, state->MotorsState.ControlValues.right) && ok;
+        if (ok) {
+            health_motor_write(true);
+        } else {
+            health_bus_recovered();
+        }
+    }
     #endif
 }
 
@@ -354,8 +372,10 @@ int main(){
     // otherwise leave the motors driving their last command. Reset instead;
     // drv8830_init() zeroes both motors on the way back up.
     watchdog_enable(WATCHDOG_TIMEOUT_MS, true);
+    health_stage(BOOT_STAGE_LOOP);
     while (true){
         watchdog_update();
+        health_loop_tick();
         bool handled_packet = get_block();
 	if (shutdown){
 	    on_shutdown();
@@ -376,6 +396,8 @@ int main(){
 }
 
 void on_start(){
+    health_boot();
+    health_stage(BOOT_STAGE_EARLY_STOP);
     #ifndef BOARD_PICO
     // Before anything else -- USB, the logger, the other chips: the motors
     // must not keep driving through a reset (drv8830_stop_early()). Enable
@@ -387,10 +409,7 @@ void on_start(){
     gpio_put(SN74AHC125RGYR_GPIO1, 0);
     drv8830_stop_early();
     #endif
-    // Read before anything can change it: why the board last reset.
-    bool by_watchdog = watchdog_caused_reboot();
-    uint32_t chip_reset = vreg_and_chip_reset_hw->chip_reset;
-
+    health_stage(BOOT_STAGE_LOG);
     rp2040_log_init();
 
     #ifdef LOGGER_UART
@@ -403,12 +422,15 @@ void on_start(){
     #endif
 
     rp2040_log_i("=== FIRMWARE RESTART ===\n");
-    // HAD_POR is power-on or brown-out, HAD_RUN the RUN pin, HAD_PSM_RESTART
-    // the debugger; with the watchdog flag, a hung loop.
-    rp2040_log_w("reset cause: watchdog=%d por=%d run=%d psm=%d\n", by_watchdog,
-                 !!(chip_reset & VREG_AND_CHIP_RESET_CHIP_RESET_HAD_POR_BITS),
-                 !!(chip_reset & VREG_AND_CHIP_RESET_CHIP_RESET_HAD_RUN_BITS),
-                 !!(chip_reset & VREG_AND_CHIP_RESET_CHIP_RESET_HAD_PSM_RESTART_BITS));
+    {
+        // Also in every state packet (RP2040_STATE.Health): this line goes
+        // out before a host has the port open.
+        HEALTH_STATE h;
+        health_fill(&h);
+        rp2040_log_w("reset cause 0x%02x, previous boot reached stage 0x%02x, boot %d\n",
+                     h.reset_cause, h.prev_boot_stage, h.boots);
+    }
+    health_stage(BOOT_STAGE_STDIO);
     rp2040_log_i("on_start\n");
     stdio_init_all();
     stdio_set_translate_crlf(driver, false);
@@ -418,14 +440,20 @@ void on_start(){
     multicore_launch_core1(core1_entry);
 
     #ifndef BOARD_PICO
+    health_stage(BOOT_STAGE_I2C);
     i2c_start();
     adc_init();
     turn_on_leds();
+    health_stage(BOOT_STAGE_WIRELESS);
     STWLC38JRM_init(WIRELESS_CHG_EN, WIRELESS_CHG_VRECT);
+    health_stage(BOOT_STAGE_NCP3901);
     ncp3901_init(GPIO_WIRELESS_AVAILABLE, GPIO_OTG);
+    health_stage(BOOT_STAGE_CHARGER);
     max77976_init(BATTERY_CHARGER_INTERRUPT_PIN, &call_queue, &results_queue);
+    health_stage(BOOT_STAGE_BUFFERS);
     sn74ahc125rgyr_init(SN74AHC125RGYR_GPIO1);
     sn74ahc125rgyr_init(SN74AHC125RGYR_GPIO2);
+    health_stage(BOOT_STAGE_PD);
     max77958_init(MAX77958_INTB, &call_queue, &results_queue);
     #endif
 
@@ -433,17 +461,20 @@ void on_start(){
     rp2040_log_i("done waiting 2\n");
 
     #ifndef BOARD_PICO
+    health_stage(BOOT_STAGE_GAUGE);
     bq27742_g1_init(BQ27742_G1_INTERRUPT_PIN);
     bq27742_g1_fw_version_check();
     // Be sure to do this last
     sn74ahc125rgyr_on_end_of_start(SN74AHC125RGYR_GPIO1);
     sn74ahc125rgyr_on_end_of_start(SN74AHC125RGYR_GPIO2);
+    health_stage(BOOT_STAGE_DRV8830);
     drv8830_init(DRV8830_FAULT1, DRV8830_FAULT2);
     #endif
 
     sleep_ms(1000);
     
     #ifndef BOARD_PICO
+    health_stage(BOOT_STAGE_ENCODERS);
     encoder_init(&call_queue);
     #endif
     
@@ -824,8 +855,9 @@ void call_queue_try_add(entry_func func, int32_t arg){
     queue_entry_t entry = {func, arg};
     //rp2040_log("call_queue currently has %i entries\n", queue_get_level(&call_queue));
     if(!queue_try_add(&call_queue, &entry)){
-        rp2040_log_e("ERROR: call_queue is full");
-	assert(false);
+        // Dropped, not fatal: motor-fault interrupts come in bursts under load,
+        // and an assert() here halted the board with the wheels driving.
+        rp2040_log_e("ERROR: call_queue is full; dropping a call\n");
     }
 }
 
@@ -855,7 +887,36 @@ static void i2c_back_off(i2c_inst_t *i2c, uint8_t addr){
     i2c_backoff_until[i2c_hw_index(i2c)][addr & 0x7F] = make_timeout_time_ms(I2C_BACKOFF_MS);
 }
 
+// Both cores use the bus (core 1 runs the fault and charger interrupt
+// handlers), so every transaction holds the I2C lock. A write with nostop
+// (the register address of a write-then-read) keeps it until the read.
+static bool i2c_restart_held[2];
+
+static void i2c_txn_begin(void){
+    i2c_lock();
+}
+
+static void i2c_txn_end(bool hold_for_read){
+    uint core = get_core_num();
+    if (hold_for_read) {
+        if (!i2c_restart_held[core]) {
+            i2c_restart_held[core] = true;
+            return;
+        }
+    } else if (i2c_restart_held[core]) {
+        i2c_restart_held[core] = false;
+        i2c_unlock();
+    }
+    i2c_unlock();
+}
+
 void i2c_write_error_handling(i2c_inst_t *i2c, uint8_t addr, const uint8_t *src, size_t len, bool nostop){
+    i2c_txn_begin();
+    i2c_write_error_handling_locked(i2c, addr, src, len, nostop);
+    i2c_txn_end(nostop);
+}
+
+static void i2c_write_error_handling_locked(i2c_inst_t *i2c, uint8_t addr, const uint8_t *src, size_t len, bool nostop){
     int result;
     int retries = 0;
     if (i2c_backed_off(i2c, addr)) {
@@ -898,6 +959,12 @@ void i2c_write_error_handling(i2c_inst_t *i2c, uint8_t addr, const uint8_t *src,
 }
 
 void i2c_read_error_handling(i2c_inst_t *i2c, uint8_t addr, uint8_t *dst, size_t len, bool nostop){
+    i2c_txn_begin();
+    i2c_read_error_handling_locked(i2c, addr, dst, len, nostop);
+    i2c_txn_end(false);
+}
+
+static void i2c_read_error_handling_locked(i2c_inst_t *i2c, uint8_t addr, uint8_t *dst, size_t len, bool nostop){
     int result;
     int retries = 0;
     if (i2c_backed_off(i2c, addr)) {

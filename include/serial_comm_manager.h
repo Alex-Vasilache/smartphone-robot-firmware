@@ -4,6 +4,7 @@
 #include "hardware/platform_defs.h"
 #include "pico/types.h"
 #include "rp2040_log.h"
+#include "health.h"
 
 #define GET_LOG 0x00
 #define SET_MOTOR_LEVEL 0x01
@@ -59,6 +60,9 @@ typedef struct
 	uint16_t usb_charger_voltage;
 	uint16_t wireless_charger_vrect;
     } ChargeSideUSB;
+
+    // Appended 2026-10-16; hosts that predate it ignore the extra bytes.
+    HEALTH_STATE Health;
 
 
 } RP2040_STATE;

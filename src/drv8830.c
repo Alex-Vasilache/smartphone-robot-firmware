@@ -4,6 +4,7 @@
 #include <math.h>
 #include "robot.h"
 #include "drv8830.h"
+#include "health.h"
 #include <string.h>
 #include <inttypes.h>
 #include "custom_printf.h"
@@ -53,7 +54,8 @@ void drv8830_on_interrupt(uint gpio, uint32_t event_mask){
     if (event_mask & drv8830_irq_mask){
         gpio_acknowledge_irq(gpio, drv8830_irq_mask);
         //TODO remember to retrieve this gpio from the fault handler to interpret which motor has the fault
-        call_queue_try_add(&drv8830_fault_handler, gpio);
+        // From an interrupt: never block or halt here if core 1 is behind.
+        call_queue_try_add_nonblocking(&drv8830_fault_handler, gpio);
         if (test_drv8830_started){
             call_queue_try_add(&drv8830_test_response, 1);
         }
@@ -160,7 +162,7 @@ void drv8830_init(uint gpio_fault1, uint gpio_fault2) {
  * @param motor The motor to set the voltage of.
  * @param voltage The voltage to set the motor to. This should be between -5.06V and 5.06V.
  */
-void set_motor_control(Motor motor, uint8_t control_value) {
+bool set_motor_control(Motor motor, uint8_t control_value) {
     // Determine the appropriate I2C address based on the motor
     uint8_t i2c_address;
     if (motor == MOTOR_LEFT) {
@@ -170,15 +172,34 @@ void set_motor_control(Motor motor, uint8_t control_value) {
     }
 
     uint8_t buffer[] = { DRV8830_REG_CONTROL, control_value};
+    // Bounded wait for the bus: core 1 may be mid-transaction with a charger
+    // or fault register, and the command loop must not stall behind it.
+    if (!i2c_lock_timeout_ms(30)) {
+        rp2040_log_e("ERROR: motor %d control write: I2C busy\n", motor);
+        return false;
+    }
     // Bounded, and retried once: the unbounded i2c_write_blocking could wait
     // forever on a bus disturbed by the motors themselves.
-    for (int attempt = 0; attempt < 2; attempt++) {
-        if (i2c_write_timeout_us(i2c, i2c_address, buffer, sizeof(buffer), false,
-                                 I2C_TIMEOUT) == sizeof(buffer)) {
-            return;
-        }
+    bool ok = false;
+    for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+        ok = i2c_write_timeout_us(i2c, i2c_address, buffer, sizeof(buffer), false,
+                                  I2C_TIMEOUT) == sizeof(buffer);
     }
-    rp2040_log_e("ERROR: motor %d control write failed\n", motor);
+    i2c_unlock();
+    if (!ok) rp2040_log_e("ERROR: motor %d control write failed\n", motor);
+    return ok;
+}
+
+// After a bus recovery: a driver that dropped out (UVLO, overcurrent) keeps
+// its fault latched until cleared.
+void drv8830_clear_faults_now(void) {
+    const uint8_t addrs[] = { MOTOR_LEFT_ADDRESS, MOTOR_RIGHT_ADDRESS };
+    const uint8_t buffer[] = { DRV8830_REG_FAULT, 1 << 7 };
+    i2c_lock();
+    for (int m = 0; m < 2; m++) {
+        i2c_write_timeout_us(i2c, addrs[m], buffer, sizeof(buffer), false, I2C_TIMEOUT);
+    }
+    i2c_unlock();
 }
 
 void set_voltage(Motor motor, float voltage) {

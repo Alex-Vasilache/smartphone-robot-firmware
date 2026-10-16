@@ -16,6 +16,7 @@ static RP2040_STATE rp2040_state_;
 static void send_state_response(uint8_t packet_type)
 {
     outgoing_packet_to_android.packet_type = packet_type;
+    health_fill(&rp2040_state_.Health);
     outgoing_packet_to_android.data = rp2040_state_;
 
     uint8_t* bytes = (uint8_t*)&outgoing_packet_to_android;
