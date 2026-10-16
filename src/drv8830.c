@@ -115,6 +115,24 @@ int32_t drv8830_fault_handler(int32_t gpio){
     }
 }
 
+// Coast both motors at once, as the very first thing after any reset. The
+// DRV8830s keep their last setting through an RP2040 reset, and the normal
+// init only reaches drv8830_init() >1 s after boot: on 2026-10-16 the board
+// reset under motor load, then kept resetting before getting there, with a
+// wheel driving at speed the whole time. No logging: it runs before the logger.
+void drv8830_stop_early(void) {
+    const uint8_t addrs[] = { MOTOR_LEFT_ADDRESS, MOTOR_RIGHT_ADDRESS };
+    const uint8_t buffer[] = { DRV8830_REG_CONTROL, 0 };
+    for (int m = 0; m < 2; m++) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            if (i2c_write_timeout_us(i2c, addrs[m], buffer, sizeof(buffer), false,
+                                     I2C_TIMEOUT) == sizeof(buffer)) {
+                break;
+            }
+        }
+    }
+}
+
 void drv8830_init(uint gpio_fault1, uint gpio_fault2) {
     rp2040_log_i("DRV8830 init\n");
     _gpio_fault1 = gpio_fault1;

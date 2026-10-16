@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <string.h>
 #include "hardware/watchdog.h"
+#include "hardware/structs/vreg_and_chip_reset.h"
 #include <CException.h>
 #include "quad_encoders.h"
 #include "drv8830.h"
@@ -375,6 +376,21 @@ int main(){
 }
 
 void on_start(){
+    #ifndef BOARD_PICO
+    // Before anything else -- USB, the logger, the other chips: the motors
+    // must not keep driving through a reset (drv8830_stop_early()). Enable
+    // the DRV8830-side buffer for the write; sn74ahc125rgyr_init() below puts
+    // it back to the normal boot sequence.
+    i2c_start();
+    gpio_init(SN74AHC125RGYR_GPIO1);
+    gpio_set_dir(SN74AHC125RGYR_GPIO1, GPIO_OUT);
+    gpio_put(SN74AHC125RGYR_GPIO1, 0);
+    drv8830_stop_early();
+    #endif
+    // Read before anything can change it: why the board last reset.
+    bool by_watchdog = watchdog_caused_reboot();
+    uint32_t chip_reset = vreg_and_chip_reset_hw->chip_reset;
+
     rp2040_log_init();
 
     #ifdef LOGGER_UART
@@ -387,6 +403,12 @@ void on_start(){
     #endif
 
     rp2040_log_i("=== FIRMWARE RESTART ===\n");
+    // HAD_POR is power-on or brown-out, HAD_RUN the RUN pin, HAD_PSM_RESTART
+    // the debugger; with the watchdog flag, a hung loop.
+    rp2040_log_w("reset cause: watchdog=%d por=%d run=%d psm=%d\n", by_watchdog,
+                 !!(chip_reset & VREG_AND_CHIP_RESET_CHIP_RESET_HAD_POR_BITS),
+                 !!(chip_reset & VREG_AND_CHIP_RESET_CHIP_RESET_HAD_RUN_BITS),
+                 !!(chip_reset & VREG_AND_CHIP_RESET_CHIP_RESET_HAD_PSM_RESTART_BITS));
     rp2040_log_i("on_start\n");
     stdio_init_all();
     stdio_set_translate_crlf(driver, false);
