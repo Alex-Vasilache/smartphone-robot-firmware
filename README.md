@@ -1,5 +1,16 @@
 This repo hosts the firmware used by the [rp2040](https://www.raspberrypi.com/documentation/microcontrollers/rp2040.html#software-development) powered [PCB](https://github.com/oist/smartphone-robot-cad/tree/pcb) for the OIST smartphone robot project.
 
+> **This fork, branch `telemetry-cache`**, is the firmware the DreamerV3
+> robot training uses
+> ([ROBOT.md](https://github.com/Alex-Vasilache/dreamerv3/blob/smartphone-robot-bridge/ROBOT.md)).
+> On top of upstream it answers serial commands in ~7 ms instead of ~83 ms
+> (telemetry cache, motor commands off the telemetry path), stops the motors
+> by itself 250 ms after the phone goes quiet and coasts them at boot, backs
+> off and recovers a failing or stuck I2C bus, and has a `BOOT_TESTS` CMake
+> option to skip the boot-time motor spin. There is no release build: build
+> it as below with `cmake .. -DBOOT_TESTS=OFF`, or flash with
+> `tools/robot/flash_base.sh --build` from the dreamerv3 repo.
+
 # Updating firmware
 
 1. Download the most recent firmware release [robot.uf2](https://github.com/oist/smartphone-robot-firmware/releases/latest)
