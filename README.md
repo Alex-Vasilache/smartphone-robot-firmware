@@ -1,15 +1,29 @@
 This repo hosts the firmware used by the [rp2040](https://www.raspberrypi.com/documentation/microcontrollers/rp2040.html#software-development) powered [PCB](https://github.com/oist/smartphone-robot-cad/tree/pcb) for the OIST smartphone robot project.
 
-> **This fork, branch `telemetry-cache`**, is the firmware the DreamerV3
-> robot training uses
-> ([ROBOT.md](https://github.com/Alex-Vasilache/dreamerv3/blob/smartphone-robot-bridge/ROBOT.md)).
-> On top of upstream it answers serial commands in ~7 ms instead of ~83 ms
-> (telemetry cache, motor commands off the telemetry path), stops the motors
-> by itself 250 ms after the phone goes quiet and coasts them at boot, backs
-> off and recovers a failing or stuck I2C bus, and has a `BOOT_TESTS` CMake
-> option to skip the boot-time motor spin. There is no release build: build
-> it as below with `cmake .. -DBOOT_TESTS=OFF`, or flash with
-> `tools/robot/flash_base.sh --build` from the dreamerv3 repo.
+> **This fork (branch `telemetry-cache`)** is the firmware the DreamerV3
+> robot training uses. Start at
+> [ROBOT.md in the dreamerv3 repo](https://github.com/Alex-Vasilache/dreamerv3/blob/smartphone-robot-bridge/ROBOT.md);
+> the three repos are
+> [dreamerv3 `smartphone-robot-bridge`](https://github.com/Alex-Vasilache/dreamerv3/tree/smartphone-robot-bridge) (learner),
+> [smartphone-robot-android `dreamer-bridge`](https://github.com/Alex-Vasilache/smartphone-robot-android/tree/dreamer-bridge) (phone app) and
+> [smartphone-robot-firmware `telemetry-cache`](https://github.com/Alex-Vasilache/smartphone-robot-firmware/tree/telemetry-cache) (this repo).
+>
+> It is based on Christopher Buckley's `split/telemetry-cache` branch
+> ([tekkura/smartphone-robot-firmware](https://github.com/tekkura/smartphone-robot-firmware/tree/split/telemetry-cache)),
+> which brings serial replies down to ~7 ms (telemetry cache, faster motor
+> command responses). This fork adds:
+>
+> - a motor watchdog: both motors coast if no motor command arrives for 250 ms
+>   while a wheel is driven, the stop is repeated while the host stays silent,
+>   and the command loop never halts with the motors driving
+> - motors coasted first thing at boot, and the reset cause logged
+> - a `BOOT_TESTS` CMake option to skip the boot-time motor spin and unit tests
+> - I2C locked across cores, a 2 s backoff for a failing device, recovery of a
+>   stuck bus, and board health reporting
+>
+> There is no release build: build it as below with `cmake .. -DBOOT_TESTS=OFF`,
+> or flash with `tools/robot/flash_base.sh --build` from the dreamerv3 repo.
+> The rest of this README is upstream's.
 
 # Updating firmware
 
